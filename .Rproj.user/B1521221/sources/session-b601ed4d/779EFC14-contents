@@ -1,0 +1,50 @@
+rm(list = ls())
+
+# library(tibble)
+
+run_flight_sim <- function(
+    ownship_csv  = NULL,
+    conda_env    = "r-pygame",
+    atclab_script = "python/flight_sim.py",
+    extra_args   = NULL
+) {
+  # Script must exist
+  stopifnot(file.exists(atclab_script))
+  
+  # If a CSV is supplied, it must exist
+  if (!is.null(ownship_csv)) {
+    if (!file.exists(ownship_csv)) {
+      stop("ownship_csv does not exist: ", ownship_csv)
+    }
+  }
+  
+  # Load reticulate + activate env
+  if (!requireNamespace("reticulate", quietly = TRUE)) {
+    stop("Package 'reticulate' is required but not installed.")
+  }
+  reticulate::use_condaenv(conda_env, required = TRUE)
+  
+  # Python binary
+  py_bin <- reticulate::py_config()$python
+  message("Using Python: ", py_bin)
+  
+  # Base args: always the script
+  args <- c(atclab_script)
+  
+  # Add CSV flag only if provided
+  if (!is.null(ownship_csv)) {
+    args <- c(args, "--ownship-csv", normalizePath(ownship_csv))
+  }
+  
+  # Optional passthrough arguments
+  if (!is.null(extra_args)) {
+    stopifnot(is.character(extra_args))
+    args <- c(args, extra_args)
+  }
+  
+  # Run the sim
+  status <- system2(py_bin, args)
+  invisible(status)
+}
+
+run_flight_sim()

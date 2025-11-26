@@ -1,0 +1,284 @@
+import pygame
+import math
+import sys
+
+pygame.init()
+WIDTH, HEIGHT = 800, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("3D Aircraft View with Roll + HUD")
+clock = pygame.time.Clock()
+
+# ---------------- Camera / aircraft ----------------
+yaw = 0.0      # rotation around Y axis (left/right)
+pitch = 0.0    # rotation around X axis (up/down)
+roll = 0.0     # rotation around Z axis (bank)
+
+# Start a bit above the ground
+cam_x, cam_y, cam_z = 0.0, 3.0, 0.0
+
+MOVE_SPEED = 6.0          # movement speed
+ROT_SPEED  = 1.5          # radians/sec
+ROLL_SPEED = 2.0          # roll rate (radians/sec)
+FOV        = 400          # focal length
+Z_OFFSET   = 0.0          # world origin relative to camera
+
+# ---------------- World / ground ----------------
+SKY_COLOR     = (30, 40, 80)
+GROUND_COLOR  = (20, 60, 35)
+GRID_COLOR    = (80, 190, 80)
+SPHERE_COLOR  = (230, 230, 255)
+PLAYER_COLOR  = (255, 80, 80)
+
+GROUND_Y      = -1.0               # y position of ground
+MIN_ALTITUDE  = GROUND_Y + 0.2     # collision: aircraft can't go below this
+
+GRID_SIZE     = 40
+GRID_STEP     = 2
+Z_NEAR_G      = 3
+Z_FAR_G       = 80
+
+# ---------------- HUD ----------------
+HUD_COLOR     = (120, 255, 140)    # phosphor green
+PITCH_SCALE   = HEIGHT / (2 * math.radians(60))  # radians -> pixels
+
+font = pygame.font.SysFont(None, 22)
+
+# ---------------- Sphere target ----------------
+SPHERE_RADIUS = 2.0
+SPHERE_CENTER = (0.0, 5.0, 30.0)   # off in the distance, above ground
+
+sphere_points = []
+num_lat = 16
+num_lon = 24
+for i in range(num_lat):
+    phi = math.pi * i / (num_lat - 1)     # 0..pi
+    for j in range(num_lon):
+        theta = 2.0 * math.pi * j / num_lon
+        x = SPHERE_RADIUS * math.sin(phi) * math.cos(theta) + SPHERE_CENTER[0]
+        y = SPHERE_RADIUS * math.cos(phi) + SPHERE_CENTER[1]
+        z = SPHERE_RADIUS * math.sin(phi) * math.sin(theta) + SPHERE_CENTER[2]
+        sphere_points.append((x, y, z))
+
+# ---------------- 3D helpers ----------------
+def rotate_x(point, angle):
+    x, y, z = point
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return (x, y * c - z * s, y * s + z * c)
+
+def rotate_y(point, angle):
+    x, y, z = point
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return (x * c + z * s, y, -x * s + z * c)
+
+def rotate_z(point, angle):
+    x, y, z = point
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return (x * c - y * s, x * s + y * c, z)
+
+def project(point):
+    x, y, z = point
+    z += Z_OFFSET
+    if z <= 0.1:
+        z = 0.1
+    f = FOV / z
+    sx = WIDTH / 2 + x * f
+    sy = HEIGHT / 2 - y * f
+    return int(sx), int(sy)
+
+def world_to_screen(x, y, z):
+    # translate by camera position
+    x -= cam_x
+    y -= cam_y
+    z -= cam_z
+
+    # rotate by inverse camera orientation (yaw, then pitch, then roll)
+    x, y, z = rotate_y((x, y, z), -yaw)
+    x, y, z = rotate_x((x, y, z), -pitch)
+    x, y, z = rotate_z((x, y, z), -roll)
+
+    # project to screen
+    return project((x, y, z))
+
+# ---------------- 2D helper for HUD ----------------
+def rotate_2d(x, y, angle, ox, oy):
+    """Rotate 2D point (x,y) about origin (ox,oy) by angle (radians)."""
+    dx = x - ox
+    dy = y - oy
+    c = math.cos(angle)
+    s = math.sin(angle)
+    rx = ox + dx * c - dy * s
+    ry = oy + dx * s + dy * c
+    return rx, ry
+
+# ---------------- HUD drawing ----------------
+def draw_hud(screen, pitch, yaw, roll):
+    cx = WIDTH // 2
+    cy = HEIGHT // 2
+
+    # ----- Horizon line -----
+    # Vertical offset: pitch up moves horizon down.
+    center_y = cy + pitch * PITCH_SCALE
+
+    # Pre-rotation endpoints (long line through centre)
+    L = WIDTH * 1.5
+    hx1, hy1 = cx - L / 2, center_y
+    hx2, hy2 = cx + L / 2, center_y
+
+    # Roll tilts the horizon: positive roll = bank right = clockwise on screen
+    hx1r, hy1r = rotate_2d(hx1, hy1, -roll, cx, cy)
+    hx2r, hy2r = rotate_2d(hx2, hy2, -roll, cx, cy)
+
+    pygame.draw.line(
+        screen,
+        HUD_COLOR,
+        (int(hx1r), int(hy1r)),
+        (int(hx2r), int(hy2r)),
+        2
+    )
+
+    # ----- Pitch ladder -----
+    for angle_deg in range(-60, 61, 10):
+        angle_rad = math.radians(angle_deg)
+
+        # offset of this ladder line relative to aircraft pitch
+        offset = (pitch - angle_rad) * PITCH_SCALE
+        y0 = cy + offset
+
+        # pre-rotation line endpoints
+        half_len = 60 if angle_deg % 20 == 0 else 40
+        x1 = cx - half_len
+        x2 = cx + half_len
+
+        # rotate both endpoints around screen centre by -roll
+        lx1, ly1 = rotate_2d(x1, y0, -roll, cx, cy)
+        lx2, ly2 = rotate_2d(x2, y0, -roll, cx, cy)
+
+        # draw only if somewhat on-screen
+        if -40 <= ly1 <= HEIGHT + 40 or -40 <= ly2 <= HEIGHT + 40:
+            pygame.draw.line(
+                screen,
+                HUD_COLOR,
+                (int(lx1), int(ly1)),
+                (int(lx2), int(ly2)),
+                1
+            )
+
+            # label: center of the line, also rotated
+            mx = (x2 + x1) / 2 + 70  # offset to right before rotation
+            my = y0
+            mxr, myr = rotate_2d(mx, my, -roll, cx, cy)
+
+            label = f"{angle_deg:+d}"
+            text_surf = font.render(label, True, HUD_COLOR)
+            text_rect = text_surf.get_rect()
+            text_rect.center = (int(mxr), int(myr))
+            screen.blit(text_surf, text_rect)
+
+    # ----- Basic heading / pitch / roll readout -----
+    heading_deg = (math.degrees(yaw) % 360.0)
+    pitch_deg   = math.degrees(pitch)
+    roll_deg    = math.degrees(roll)
+    heading_text = (
+        f"HDG {heading_deg:06.2f}°  "
+        f"PITCH {pitch_deg:+06.2f}°  "
+        f"ROLL {roll_deg:+06.2f}°"
+    )
+    hsurf = font.render(heading_text, True, HUD_COLOR)
+    screen.blit(hsurf, (10, 10))
+
+# ---------------- Main loop ----------------
+running = True
+while running:
+    dt = clock.tick(60) / 1000.0
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+    keys = pygame.key.get_pressed()
+
+    # ---- Orientation controls ----
+    # Yaw with A/D
+    if keys[pygame.K_a]:
+        yaw -= ROT_SPEED * dt
+    if keys[pygame.K_d]:
+        yaw += ROT_SPEED * dt
+
+    # Pitch with Up/Down arrows
+    if keys[pygame.K_UP]:
+        pitch += ROT_SPEED * dt
+    if keys[pygame.K_DOWN]:
+        pitch -= ROT_SPEED * dt
+
+    # Roll with Left/Right arrows
+    if keys[pygame.K_LEFT]:
+        roll += ROLL_SPEED * dt
+    if keys[pygame.K_RIGHT]:
+        roll -= ROLL_SPEED * dt
+
+    # Clamp pitch to avoid flipping upside down
+    max_pitch = math.radians(89)
+    pitch = max(-max_pitch, min(max_pitch, pitch))
+
+    # ---- Movement (W/S only, aircraft-style forward) ----
+    # Forward vector uses yaw + pitch (roll doesn't change forward direction)
+    forward_x = math.sin(yaw) * math.cos(pitch)
+    forward_y = math.sin(pitch)
+    forward_z = math.cos(yaw) * math.cos(pitch)
+
+    if keys[pygame.K_w]:
+        cam_x += forward_x * MOVE_SPEED * dt
+        cam_y += forward_y * MOVE_SPEED * dt
+        cam_z += forward_z * MOVE_SPEED * dt
+    if keys[pygame.K_s]:
+        cam_x -= forward_x * MOVE_SPEED * dt
+        cam_y -= forward_y * MOVE_SPEED * dt
+        cam_z -= forward_z * MOVE_SPEED * dt
+
+    # ---- Ground collision: don't go below MIN_ALTITUDE ----
+    if cam_y < MIN_ALTITUDE:
+        cam_y = MIN_ALTITUDE
+
+    # ---------------- Drawing ----------------
+    screen.fill(SKY_COLOR)
+
+    # --- Ground polygon ---
+    ground_corners_world = [
+        (-GRID_SIZE, GROUND_Y, Z_NEAR_G),
+        ( GRID_SIZE, GROUND_Y, Z_NEAR_G),
+        ( GRID_SIZE, GROUND_Y, Z_FAR_G),
+        (-GRID_SIZE, GROUND_Y, Z_FAR_G),
+    ]
+    ground_poly = [world_to_screen(x, y, z) for x, y, z in ground_corners_world]
+    pygame.draw.polygon(screen, GROUND_COLOR, ground_poly)
+
+    # --- Ground grid ---
+    for x in range(-GRID_SIZE, GRID_SIZE + 1, GRID_STEP):
+        p1 = world_to_screen(x, GROUND_Y + 0.01, Z_NEAR_G)
+        p2 = world_to_screen(x, GROUND_Y + 0.01, Z_FAR_G)
+        pygame.draw.line(screen, GRID_COLOR, p1, p2, 1)
+
+    for z in range(Z_NEAR_G, Z_FAR_G + 1, GRID_STEP):
+        p1 = world_to_screen(-GRID_SIZE, GROUND_Y + 0.01, z)
+        p2 = world_to_screen( GRID_SIZE, GROUND_Y + 0.01, z)
+        pygame.draw.line(screen, GRID_COLOR, p1, p2, 1)
+
+    # --- Sphere (point cloud) ---
+    for x, y, z in sphere_points:
+        sx, sy = world_to_screen(x, y, z)
+        if 0 <= sx < WIDTH and 0 <= sy < HEIGHT:
+            pygame.draw.circle(screen, SPHERE_COLOR, (sx, sy), 2)
+
+    # --- Aircraft icon at screen centre ---
+    pygame.draw.circle(screen, PLAYER_COLOR, (WIDTH // 2, HEIGHT // 2), 5)
+
+    # --- HUD overlay (horizon + pitch ladder) ---
+    draw_hud(screen, pitch, yaw, roll)
+
+    pygame.display.flip()
+
+pygame.quit()
+sys.exit()
