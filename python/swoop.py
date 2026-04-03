@@ -46,16 +46,6 @@ CIRCLE_COLOR     = (120, 255, 140)     # phosphor green ownship circle
 TEXT_COLOR       = (120, 255, 140)    # off-white
 CIRCLE_RADIUS    = int(10 * GLOBAL_SCALE)   # scaled ownship radius
 
-# ------------------------- Ownship controls ------------------------------
-
-OWN_BRG_STEP_DEG   = 1.0    # degrees per left/right key press
-OWN_SPD_STEP_KT    = 1.0    # knots per up/down key press
-OWN_SPD_MIN_KT     = 0.0    # no reverse for now
-OWN_SPD_MAX_KT     = 1000.0  # arbitrary cap
-# Continuous change when keys are held (per second)
-OWN_BRG_RATE_DEG_PER_SEC  = 60.0   # deg/s while held
-OWN_SPD_RATE_KT_PER_SEC   = 80.0   # kt/s while held
-
 
 
 # # ------------------------ Ground layer (static) ---------------------------
@@ -112,22 +102,11 @@ COMPASS_BG_COLOR   = (0, 0, 0)        # black circle background
 COMPASS_RING_COLOR = (80, 80, 80)     # outer ring
 
 
-# ------------------------- Ownship vectors -------------------------------
-
-THRUST_VECTOR_COLOR = (255, 220, 120)   # warm yellow-ish (forward / thrust)
-DRAG_VECTOR_COLOR   = (160, 220, 255)   # cool cyan-ish (rearward / drag)
-COMP_EW_COLOR       = (120, 255, 180)   # E–W component
-COMP_NS_COLOR       = (255, 150, 200)   # N–S component
-
-THRUST_VECTOR_PX_PER_KT = 0.3 * GLOBAL_SCALE  # pixels of vector length per knot
-VECTOR_LINE_WIDTH       = 1
-COMP_VECTOR_LINE_WIDTH  = 1
-
 # ------------------------------ Intruder ---------------------------------
 
 INTRUDER_COLOR        = (255, 120, 120)  # warm red-ish to pop against sea
 INTRUDER_RADIUS       = int(10 * GLOBAL_SCALE)
-INTRUDER_PX_PER_KT    = THRUST_VECTOR_PX_PER_KT  # same scale as vectors
+INTRUDER_PX_PER_KT    = 0.3 * GLOBAL_SCALE
 INTRUDER_HEADING_LEN  = int(10 * GLOBAL_SCALE)   # small nose line to show heading
 
 
@@ -137,8 +116,6 @@ INTRUDER_HEADING_LEN  = int(10 * GLOBAL_SCALE)   # small nose line to show headi
 def load_ownship_from_csv(path):
     """
     Read a single-row CSV with:
-      - ownship_speed      : ownship speed in knots
-      - ownship_bearing    : ownship heading in degrees
       - x_dim, y_dim       : screen size (pixels)
       - DOMS               : min separation vs intruder (NM)
       - TTMS               : time to min sep (s)
@@ -146,9 +123,6 @@ def load_ownship_from_csv(path):
       - bearing_intr_deg   : intruder heading (deg, 0=N, 90=E)
       - intruder_x_px      : intruder start x (pixels)
       - intruder_y_px      : intruder start y (pixels)
-
-    Optionally, x_px / y_px can be given for ownship; otherwise we
-    default ownship to the centre of the screen.
 
     Returns (ownship, intruder, screen_w, screen_h).
     """
@@ -170,19 +144,9 @@ def load_ownship_from_csv(path):
     SCREEN_WIDTH  = int(x_dim)
     SCREEN_HEIGHT = int(y_dim)
 
-    # Ownship position (optional; default to screen centre)
-    x = parse_float(row, "x_px", default=SCREEN_WIDTH  / 2.0)
-    y = parse_float(row, "y_px", default=SCREEN_HEIGHT / 2.0)
-
-    # Ownship kinematics
-    speed_kn    = parse_float(row, "ownship_speed",   default=None)
-    bearing_deg = parse_float(row, "ownship_bearing", default=None)
-
     ownship = {
-        "x_px": x,
-        "y_px": y,
-        "speed_kn": speed_kn,
-        "bearing_deg": bearing_deg,
+        "x_px": SCREEN_WIDTH / 2.0,
+        "y_px": SCREEN_HEIGHT / 2.0,
     }
 
     # Conflict geometry & intruder fields from the CSV
@@ -1071,8 +1035,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         ownship = {
             "x_px": w_csv / 2.0,
             "y_px": h_csv / 2.0,
-            "speed_kn": 200.0,    # default speed
-            "bearing_deg": 0.0,   # 0° = North
         }
 
         intruder = None
@@ -1295,32 +1257,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-
-                # Rotate bearing: LEFT = decrease, RIGHT = increase
-                elif event.key == pygame.K_LEFT:
-                    if ownship["bearing_deg"] is None:
-                        ownship["bearing_deg"] = 0.0
-                    ownship["bearing_deg"] = (ownship["bearing_deg"] - OWN_BRG_STEP_DEG) % 360.0
-
-                elif event.key == pygame.K_RIGHT:
-                    if ownship["bearing_deg"] is None:
-                        ownship["bearing_deg"] = 0.0
-                    ownship["bearing_deg"] = (ownship["bearing_deg"] + OWN_BRG_STEP_DEG) % 360.0
-
-                # Speed: UP = faster, DOWN = slower
-                elif event.key == pygame.K_UP:
-                    if ownship["speed_kn"] is None:
-                        ownship["speed_kn"] = 0.0
-                    new_spd = ownship["speed_kn"] + OWN_SPD_STEP_KT
-                    new_spd = max(OWN_SPD_MIN_KT, min(OWN_SPD_MAX_KT, new_spd))
-                    ownship["speed_kn"] = new_spd
-
-                elif event.key == pygame.K_DOWN:
-                    if ownship["speed_kn"] is None:
-                        ownship["speed_kn"] = 0.0
-                    new_spd = ownship["speed_kn"] - OWN_SPD_STEP_KT
-                    new_spd = max(OWN_SPD_MIN_KT, min(OWN_SPD_MAX_KT, new_spd))
-                    ownship["speed_kn"] = new_spd
                     
                 # C = respond "THREAT"
                 elif event.key == pygame.K_c:
@@ -1532,38 +1468,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
 
 
 
-
-  
-        # -------- Continuous controls (keys held down) --------
-        keys = pygame.key.get_pressed()
-
-        # Make sure fields aren't None
-        if ownship["bearing_deg"] is None:
-            ownship["bearing_deg"] = 0.0
-        if ownship["speed_kn"] is None:
-            ownship["speed_kn"] = 0.0
-
-        # Bearing: LEFT = decrease, RIGHT = increase
-        if keys[pygame.K_LEFT]:
-            ownship["bearing_deg"] = (ownship["bearing_deg"] -
-                                      OWN_BRG_RATE_DEG_PER_SEC * dt) % 360.0
-        if keys[pygame.K_RIGHT]:
-            ownship["bearing_deg"] = (ownship["bearing_deg"] +
-                                      OWN_BRG_RATE_DEG_PER_SEC * dt) % 360.0
-
-        # Speed: UP = faster, DOWN = slower
-        if keys[pygame.K_UP]:
-            ownship["speed_kn"] += OWN_SPD_RATE_KT_PER_SEC * dt
-        if keys[pygame.K_DOWN]:
-            ownship["speed_kn"] -= OWN_SPD_RATE_KT_PER_SEC * dt
-
-        # Clamp speed
-        if ownship["speed_kn"] < OWN_SPD_MIN_KT:
-            ownship["speed_kn"] = OWN_SPD_MIN_KT
-        elif ownship["speed_kn"] > OWN_SPD_MAX_KT:
-            ownship["speed_kn"] = OWN_SPD_MAX_KT
-
-  
         # --- Update prevailing wind via Lévy-flight (3 Hz) ---------------
         wind_update_accum += dt
         while wind_update_accum >= WIND_UPDATE_INTERVAL:
@@ -1645,32 +1549,13 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
 
   
         # ---------- Compute background velocities --------------------------
-        # Ownship vector
-        ownship_speed_kn = ownship.get("speed_kn") or 0.0
-        ownship_bearing_deg = ownship.get("bearing_deg")
-  
-        ownship_vx = 0.0
-        ownship_vy = 0.0
-        if ownship_bearing_deg is not None and ownship_speed_kn is not None:
-            # Aviation-style: 0° = North (up), 90° = East (right)
-            ang = math.radians(ownship_bearing_deg)
-            ownship_vx = math.sin(ang) * ownship_speed_kn * WINDFIELD_PX_PER_KT
-            ownship_vy = -math.cos(ang) * ownship_speed_kn * WINDFIELD_PX_PER_KT
-  
-        # Prevailing wind vector
+        # With the player fixed at the display center, only the prevailing
+        # wind contributes to background motion.
         wind_ang = math.radians(wind_bearing_deg)
         wind_vx = math.sin(wind_ang) * wind_speed_kn * WINDFIELD_PX_PER_KT
         wind_vy = -math.cos(wind_ang) * wind_speed_kn * WINDFIELD_PX_PER_KT
-  
-        # Ground layer scrolls opposite to ownship motion only
-        ground_vx = -ownship_vx
-        ground_vy = -ownship_vy
-  
-        # Wind layer scrolls opposite to ownship, with the wind
-        wind_layer_vx = (-WIND_LAYER_OWNSHIP_WEIGHT * ownship_vx +
-                          WIND_LAYER_WIND_WEIGHT * wind_vx)
-        wind_layer_vy = (-WIND_LAYER_OWNSHIP_WEIGHT * ownship_vy +
-                          WIND_LAYER_WIND_WEIGHT * wind_vy)
+        wind_layer_vx = WIND_LAYER_WIND_WEIGHT * wind_vx
+        wind_layer_vy = WIND_LAYER_WIND_WEIGHT * wind_vy
 
   
         # -------------------- Wind layer update/draw -----------------------
@@ -1916,76 +1801,7 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
                     2,
                 )
 
-          
-        # ------------------- Thrust, drag & components --------------------
-        if ownship["speed_kn"] is not None and ownship["bearing_deg"] is not None:
-            spd = ownship["speed_kn"]
-            brg_deg = ownship["bearing_deg"]
-
-            # Aviation-style bearing: 0° = North (up), 90° = East (right)
-            ang = math.radians(brg_deg)
-
-            # Unit direction of travel in *screen* coords
-            # (ux, uy) scaled by speed → velocity in "knots" space
-            ux = math.sin(ang)      # +x = East
-            uy = -math.cos(ang)     # +y = South on screen, North is negative
-
-            # Common scale: total vector length is strictly proportional to speed
-            scale = spd * THRUST_VECTOR_PX_PER_KT
-
-            # ---------- Thrust vector (forward, along direction of travel) ----
-            thrust_dx = ux * scale
-            thrust_dy = uy * scale
-
-            pygame.draw.line(
-                screen,
-                THRUST_VECTOR_COLOR,
-                (x, y),
-                (int(x + thrust_dx), int(y + thrust_dy)),
-                VECTOR_LINE_WIDTH,
-            )
-
-            # ---------- Drag vector (rearward, opposite direction) ------------
-            drag_dx = -ux * scale
-            drag_dy = -uy * scale
-
-            pygame.draw.line(
-                screen,
-                DRAG_VECTOR_COLOR,
-                (x, y),
-                (int(x + drag_dx), int(y + drag_dy)),
-                VECTOR_LINE_WIDTH,
-            )
-
-            # ---------- Velocity components: E–W and N–S ----------------------
-            # Horizontal component: purely east–west (x only)
-            comp_ew_dx = ux * scale
-            comp_ew_dy = 0.0
-
-            pygame.draw.line(
-                screen,
-                COMP_EW_COLOR,
-                (x, y),
-                (int(x + comp_ew_dx), int(y + comp_ew_dy)),
-                COMP_VECTOR_LINE_WIDTH,
-            )
-
-            # Vertical component: purely north–south (y only)
-            # (Remember: +y = south on screen, so "north" is negative.)
-            comp_ns_dx = 0.0
-            comp_ns_dy = uy * scale
-
-            pygame.draw.line(
-                screen,
-                COMP_NS_COLOR,
-                (x, y),
-                (int(x + comp_ns_dx), int(y + comp_ns_dy)),
-                COMP_VECTOR_LINE_WIDTH,
-            )
-
-
         # ----------------------- Outcome bar charts & RT hist -----------------------
-                # ----------------------- Outcome bar charts & RT hists -----------------------
         # Left-hand panel: two bar charts (THREAT/SAFE, then PM) + two RT histograms
 
         panel_x = 10
@@ -2094,26 +1910,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
             mean_rt=pm_mean_rt,
         )
 
-
-
-
-        # # ---- SPD/BRG label at top of screen --------------------------------
-        # label_parts = []
-        # if ownship["speed_kn"] is not None:
-        #     label_parts.append(f"SPD {ownship['speed_kn']:.0f} kt")
-        # if ownship["bearing_deg"] is not None:
-        #     label_parts.append(f"BRG {ownship['bearing_deg']:.0f}°")
-        # 
-        # if label_parts:
-        #     label = "   ".join(label_parts)
-        #     draw_text(
-        #         screen,
-        #         font,
-        #         label,
-        #         TEXT_COLOR,
-        #         (w // 2, 30),
-        #     )
-            
         # Update & draw floating feedback
         to_remove = []
         for fb in feedback_list:
