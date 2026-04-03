@@ -3,7 +3,7 @@ rm(list = ls())
 run_swoop <- function(
     ownship_csv  = NULL,
     conda_env    = "r-pygame",
-    atclab_script = "python/swoop_pm.py",
+    atclab_script = "python/swoop.py",
     extra_args   = NULL
 ) {
   # Script must exist

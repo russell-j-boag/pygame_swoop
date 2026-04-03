@@ -5,11 +5,12 @@ import os
 import argparse
 import math
 import random 
+import time
 
 # -------------------------- Output logging -------------------------------
 
 RESULTS_DIR = "output"
-RESULTS_CSV = "results_swoop.csv"
+RESULTS_CSV = "results_swoop_precision_rt.csv"
 
 # --------------------------- Global scale --------------------------------
 # Master scaling for distances and pixel rates.
@@ -70,7 +71,7 @@ OWN_SPD_RATE_KT_PER_SEC   = 80.0   # kt/s while held
   
 # ------------------------- Wind layer (turbulent) -------------------------
 
-NUM_WIND_SPECKS     = 2000             # density
+NUM_WIND_SPECKS     = 2400             # density
   
 # Wind layer visual properties (uniform)
 WIND_RADIUS         = max(1, int(round(3 * GLOBAL_SCALE)))
@@ -81,7 +82,7 @@ WIND_COLOR_LIGHT    = (255, 250, 220)  # pale creamy pollen/white
 WIND_ALPHA = 140               # slightly more visible (optional)
   
 # How fast the wind field scrolls per knot of speed (pixels/sec/knot)
-WINDFIELD_PX_PER_KT = 1.0 * GLOBAL_SCALE
+WINDFIELD_PX_PER_KT = 2.0 * GLOBAL_SCALE
   
 # ---------------------- Prevailing wind random walk ----------------------
   
@@ -92,8 +93,8 @@ WIND_SPEED_MIN_KT    = 100.0
 WIND_SPEED_MAX_KT    = 500.0
   
 # Random-walk strengths (per second, used as Lévy scales)
-WIND_SPEED_RW_STD    = 2.5      # ~typical speed step size (knots)
-WIND_BEARING_RW_STD  = 10.0      # ~typical bearing step size (degrees)
+WIND_SPEED_RW_STD    = 2.0      # ~typical speed step size (knots)
+WIND_BEARING_RW_STD  = 2.0      # ~typical bearing step size (degrees)
   
 # How often to update wind (seconds)
 WIND_UPDATE_INTERVAL = 1.0 / 3.0   # 3 times per second
@@ -104,7 +105,7 @@ WIND_LAYER_WIND_WEIGHT    = 1 - WIND_LAYER_OWNSHIP_WEIGHT
   
 # ----------------------------- Compass HUD --------------------------------
   
-COMPASS_RADIUS     = int(70 * GLOBAL_SCALE)
+COMPASS_RADIUS     = int(100 * GLOBAL_SCALE)
 COMPASS_MARGIN_X   = 40   # distance from right edge
 COMPASS_LINE_COLOR = (240, 240, 240)  # same as TEXT_COLOR
 COMPASS_BG_COLOR   = (0, 0, 0)        # black circle background
@@ -265,22 +266,24 @@ def jitter_alpha(base_alpha, low=0.6, high=1.0):
 
 # ------------------------- HUD plotting helpers -------------------------
 
-def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
+def draw_bar_chart(screen, font_axis, font_labels, rect, counts, prop_correct=None):
     """
     Draw a simple bar chart of outcome proportions in the given rect.
 
-    counts: dict with keys "HIT", "MISS", "NR", "FA", "CR".
+    counts: dict with keys like
+        "HIT", "MISS", "NR", "FA", "CR",
+        "PM HIT", "PM MISS", "PM NR", "PM FA"
+
     Y-axis is fixed from 0 to 1.
 
-    prop_correct: optional float in [0,1] giving overall proportion correct.
-    If None, it will be computed from counts as:
-        (HIT + CR) / (HIT + MISS + FA + CR)
+    prop_correct: optional float in [0,1] giving overall proportion correct
+    (for the red reference line). If None, no reference line is drawn.
     """
     x, y, w, h = rect
     total = sum(counts.values())
     if total <= 0:
-        # No data yet
-        label = font.render("No data", True, TEXT_COLOR)
+        # No data yet at all
+        label = font_axis.render("No data", True, TEXT_COLOR)
         screen.blit(label, (x + 5, y + 5))
         return
 
@@ -289,13 +292,29 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
     pygame.draw.rect(screen, (80, 80, 80), rect, 1)
 
     # Outcome order & colours
-    keys = ["HIT", "MISS", "NR", "FA", "CR"]
+    base_keys = ["HIT", "MISS", "NR", "FA", "CR",
+                 "PM HIT", "PM MISS", "PM NR", "PM FA"]
+    keys = [k for k in base_keys if k in counts]
+
+    # If no recognised keys: bail out gracefully
+    if not keys:
+        label = font_axis.render("No data", True, TEXT_COLOR)
+        screen.blit(label, (x + 5, y + 5))
+        return
+
     colors = {
-        "HIT": (120, 255, 140),   # green-ish
-        "MISS": (255, 120, 120),  # red-ish
-        "NR": (255, 200, 120),    # amber
-        "FA": (255, 160, 220),    # pink-ish
-        "CR": (150, 200, 255),    # blue-ish
+        # Normal bird outcomes
+        "HIT":  (120, 255, 140),   # green-ish
+        "MISS":  (255, 120, 120),   # red-ish
+        "NR": (255, 200, 120),   # amber
+        "FA": (255, 160, 220),   # pink-ish
+        "CR": (150, 200, 255),   # blue-ish
+
+        # GULL / PM-coded outcomes
+        "PM HIT":  (80,  240, 160),  # slightly different green
+        "PM MISS":  (255, 80,  80),   # red for missed gull
+        "PM NR": (255, 220, 120),  # amber NR for gull
+        "PM FA": (200, 140, 255),  # purple-ish for gull false alarms
     }
 
     # --- Y-axis 0–1 ---------------------------------------------------
@@ -311,8 +330,8 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
     )
 
     # Tick labels 1.0 (top) and 0.0 (bottom)
-    label1 = font.render("1.0", True, TEXT_COLOR)
-    label0 = font.render("0.0", True, TEXT_COLOR)
+    label1 = font_axis.render("1.0", True, TEXT_COLOR)
+    label0 = font_axis.render("0.0", True, TEXT_COLOR)
     screen.blit(
         label1,
         (axis_x + 4, axis_top - label1.get_height() // 2),
@@ -323,7 +342,7 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
     )
 
     # Y-axis label "p" above axis
-    ylabel = font.render("p", True, TEXT_COLOR)
+    ylabel = font_axis.render("p", True, TEXT_COLOR)
     screen.blit(
         ylabel,
         (axis_x, y - ylabel.get_height() + 5),
@@ -332,7 +351,6 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
     # ---- Bars (scaled 0–1 to axis height) ----------------------------
     bar_margin = 4
     n = len(keys)
-    # Bar drawing area starts a bit to the right of the axis
     bar_area_x0 = axis_x + 30
     bar_area_width = w - (bar_area_x0 - x) - bar_margin
     if bar_area_width < 10:
@@ -341,10 +359,12 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
     bar_width = (bar_area_width - (n + 1) * bar_margin) / n
     max_height = axis_bottom - axis_top  # corresponds to proportion = 1
 
+    total_counts = sum(counts.values())
+
     # Draw bars
     for i, k in enumerate(keys):
         count = counts.get(k, 0)
-        prop = count / total
+        prop = count / total_counts if total_counts > 0 else 0.0
         bh = prop * max_height
 
         bx = bar_area_x0 + bar_margin + i * (bar_width + bar_margin)
@@ -356,24 +376,12 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
             (bx, by, bar_width, bh),
         )
 
-        # Category label under bar
-        label = font.render(k, True, TEXT_COLOR)
+        # Category label under bar (tiny font)
+        label = font_labels.render(k, True, TEXT_COLOR)
         lr = label.get_rect(center=(bx + bar_width / 2, y + h - 8))
         screen.blit(label, lr)
 
-    # ---- Horizontal line at overall accuracy -------------------------
-    if prop_correct is None:
-        # Use only scored trials: HIT, MISS, FA, CR
-        scored = (
-            counts.get("HIT", 0)
-            + counts.get("MISS", 0)
-            + counts.get("FA", 0)
-            + counts.get("CR", 0)
-        )
-        if scored > 0:
-            correct = counts.get("HIT", 0) + counts.get("CR", 0)
-            prop_correct = correct / scored
-
+    # ---- Horizontal line at overall accuracy (if given) --------------
     if prop_correct is not None:
         prop_correct = max(0.0, min(1.0, prop_correct))
         y_line = axis_bottom - prop_correct * max_height
@@ -384,7 +392,6 @@ def draw_bar_chart(screen, font, rect, counts, prop_correct=None):
             (x + w - 5, int(y_line)),
             2,
         )
-
 
 
 
@@ -527,27 +534,35 @@ class Bird:
     - Miss distances are drawn ONLY from:
         THREAT: 0–40 px
         SAFE  : 60–100 px
+
+    - On each trial, this object can behave as:
+        * a normal THREAT/SAFE bird  (respond with C/N),
+        * a SEAGULL oddball          (respond with key '9').
+
     - Bird image is rotated so its 'top' faces the direction of travel.
-    - Responses are via the keyboard:
-        C = "THREAT" response
-        N = "SAFE"   response
-
-      Trial-level outcomes:
-        THREAT + C (response THREAT)           = HIT
-        THREAT + N (response SAFE)             = MISS
-        SAFE   + C (response THREAT)           = FALSE_ALARM
-        SAFE   + N (response SAFE)             = CORRECT_REJECT
-        No valid OUTER-donut response by exit  = NR (non-response)
-
-      We also log RTs for late responses (inside inner half).
     """
 
-    THREAT_RANGE = (0.0, 40.0)   # base pixels
-    SAFE_RANGE   = (60.0, 100.0) # base pixels
+    THREAT_RANGE = (0.0, 45.0)   # base pixels
+    SAFE_RANGE   = (55.0, 100.0) # base pixels
+    P_SEAGULL    = 0.10          # 10% GULL trials
 
-    def __init__(self, image_surf, screen_w, screen_h, speed_px_s=200.0):
-        # Store the original upright image (facing straight up)
-        self.base_image = image_surf
+    def __init__(
+        self,
+        bird_image_surf,
+        gull_image_surf,
+        screen_w,
+        screen_h,
+        speed_px_s=200.0,
+        use_precision_timing=False,
+    ):
+        # Base sprite for normal THREAT/SAFE trials
+        self.base_image = bird_image_surf
+
+        # Seagull sprite for SEAGULL trials; if None, fall back to base
+        if gull_image_surf is not None:
+            self.seagull_image = gull_image_surf
+        else:
+            self.seagull_image = bird_image_surf
 
         self.screen_w = screen_w
         self.screen_h = screen_h
@@ -569,30 +584,36 @@ class Bird:
         # Current sprite + rect
         self.image = self.base_image
         self.rect  = self.image.get_rect(center=(self.cx_sector, self.cy_sector))
+        self.use_precision_timing = use_precision_timing
 
         # Trial properties
         self.trial_index = 0
-        self.label    = "SAFE"   # "THREAT" or "SAFE"
+        self.label    = "SAFE"   # "THREAT", "SAFE", or "SEAGULL"
         self.miss_px  = 0.0      # miss distance in pixels
 
+        # Species flag for this trial
+        self.is_seagull = False  # False = normal THREAT/SAFE bird
+
         # Response state
-        self.scored_response = None   # None, "THREAT", "SAFE" (only if in outer donut)
-        self.raw_response    = None   # first C/N pressed this trial ("THREAT"/"SAFE")
+        self.scored_response = None   # None, "THREAT", "SAFE", "SEAGULL"
+        self.raw_response    = None   # first C/N/9 pressed this trial
         self.raw_response_time = None # time since spawn (s)
         self.raw_response_phase = None  # "outer" or "inner"
 
         # Timing state
+        self.spawn_time = None
         self.t_since_spawn  = 0.0    # time since this trial's spawn
         self.t_inner_cross  = None   # time when we first crossed radius/2
 
         self.reset()
+
 
     # ------------------------ helpers ---------------------------------
 
     def _choose_label_and_miss(self):
         """
         Choose THREAT/SAFE and a miss distance from the appropriate range,
-        scaled by GLOBAL_SCALE.
+        scaled by GLOBAL_SCALE. Used only for normal (non-seagull) trials.
         """
         if random.random() < 0.5:
             self.label = "THREAT"
@@ -607,16 +628,41 @@ class Bird:
 
         self.miss_px = random.uniform(lo, hi)
 
+    def _choose_seagull_miss(self):
+        """
+        Miss distance range for seagull trials.
+        For now we just reuse the SAFE_RANGE band, scaled.
+        """
+        lo, hi = self.SAFE_RANGE
+        lo *= GLOBAL_SCALE
+        hi *= GLOBAL_SCALE
+        self.miss_px = random.uniform(lo, hi)
 
     def _trial_outcome(self):
         """
         Return one of:
-            "HIT", "MISS", "FALSE_ALARM", "CORRECT_REJECT", or "NR".
+            "HIT", "MISS", "FALSE_ALARM", "CORRECT_REJECT", "NR",
+            "GULL_HIT", "GULL_MISS", or "GULL_FALSE_ALARM".
+
         Outcome is based only on the *scored* response (outer donut).
         Late-only responses (inner half) → NR, but RT is still logged.
         """
         if self.scored_response is None:
             return "NR"
+
+        # -------- Seagull trials --------------------------------------
+        if self.is_seagull:
+            if self.scored_response == "SEAGULL":
+                return "GULL_HIT"
+            elif self.scored_response in ("THREAT", "SAFE"):
+                return "GULL_MISS"
+            else:
+                return "NR"
+
+        # -------- Normal THREAT/SAFE bird trials ----------------------
+        # Oddball key '9' on a *non*-seagull trial → PM false alarm
+        if self.scored_response == "SEAGULL":
+            return "GULL_FALSE_ALARM"
 
         if self.scored_response == "THREAT":
             if self.label == "THREAT":
@@ -630,6 +676,7 @@ class Bird:
                 return "CORRECT_REJECT"
 
         return "NR"
+
 
     def _is_past_sector_edge(self):
         """
@@ -647,23 +694,45 @@ class Bird:
         dot = dx*self.vx + dy*self.vy
         return dot > 0
 
+    def _start_trial_timer(self):
+        self.spawn_time = time.perf_counter() if self.use_precision_timing else None
+        self.t_since_spawn = 0.0
+        self.t_inner_cross = None
+
+    def _elapsed_since_spawn(self, dt):
+        if self.use_precision_timing:
+            if self.spawn_time is None:
+                self.spawn_time = time.perf_counter()
+                return 0.0
+            return time.perf_counter() - self.spawn_time
+
+        return self.t_since_spawn + dt
+
     # ------------------------ main API --------------------------------
 
     def reset(self):
         """
         New trial:
           1) Increment trial index.
-          2) Draw label (THREAT or SAFE) and miss distance.
-          3) Draw random approach angle and compute spawn + miss point.
-          4) Set velocity along that hypotenuse with a randomised speed and
+          2) Decide whether this trial is a normal bird or a seagull.
+          3) Draw label/miss distance.
+          4) Draw random approach angle and compute spawn + miss point.
+          5) Set velocity along that hypotenuse with a randomised speed and
              rotate sprite accordingly.
         """
         self.trial_index += 1
-        self._choose_label_and_miss()
+
+        # ----- Decide species for this trial ---------------------------
+        if random.random() < self.P_SEAGULL:
+            self.is_seagull = True
+            self.label = "SEAGULL"
+            self._choose_seagull_miss()
+        else:
+            self.is_seagull = False
+            self._choose_label_and_miss()
 
         # Reset timing and response state
-        self.t_since_spawn = 0.0
-        self.t_inner_cross = None
+        self._start_trial_timer()
 
         self.scored_response = None
         self.raw_response = None
@@ -719,26 +788,34 @@ class Bird:
         heading_deg = math.degrees(math.atan2(-dir_y, dir_x))
         self.travel_angle_deg = heading_deg - 90.0
 
-        self.image = pygame.transform.rotate(self.base_image, self.travel_angle_deg)
+        base = self.seagull_image if self.is_seagull else self.base_image
+        self.image = pygame.transform.rotate(base, self.travel_angle_deg)
         self.rect  = self.image.get_rect(center=(int(self.cx), int(self.cy)))
 
-        print(f"[Bird] Reset: trial={self.trial_index}, label={self.label}, "
-              f"miss={self.miss_px:.1f}px, "
-              f"theta={math.degrees(theta):.1f}°, "
-              f"start=({self.cx:.1f}, {self.cy:.1f}), "
-              f"heading={self.travel_angle_deg:.1f}°, "
-              f"speed={trial_speed:.1f}px/s")
+        print(
+            f"[Bird] Reset: trial={self.trial_index}, "
+            f"species={'SEAGULL' if self.is_seagull else 'BIRD'}, "
+            f"label={self.label}, miss={self.miss_px:.1f}px, "
+            f"theta={math.degrees(theta):.1f}°, "
+            f"start=({self.cx:.1f}, {self.cy:.1f}), "
+            f"heading={self.travel_angle_deg:.1f}°, "
+            f"speed={trial_speed:.1f}px/s"
+        )
 
     def register_response(self, resp_type):
+        """
+        resp_type: "THREAT", "SAFE", or "SEAGULL" (from keys C, N, 9).
+        Returns trial info dict (or None if response ignored).
+        """
         if self.raw_response is not None:
             return None  # ignore additional presses
 
-        if resp_type not in ("THREAT", "SAFE"):
+        if resp_type not in ("THREAT", "SAFE", "SEAGULL"):
             return None
 
         # mark raw response
         self.raw_response = resp_type
-        self.raw_response_time = self.t_since_spawn
+        self.raw_response_time = self._elapsed_since_spawn(0.0)
 
         # check inner radius
         dx = self.cx - self.cx_sector
@@ -748,15 +825,16 @@ class Bird:
         inner2 = inner * inner
 
         if r2 > inner2:
+            # scored (outer donut) response
             self.scored_response = resp_type
             self.raw_response_phase = "outer"
         else:
+            # inner-only (too late) response
             self.raw_response_phase = "inner"
 
         # END TRIAL IMMEDIATELY
         info = self._immediate_finish()
         return info
-
 
     def _build_trial_record(self, outcome):
         """
@@ -783,11 +861,11 @@ class Bird:
     def update(self, dt):
         """
         Move the bird. If it exits the sector, returns:
-            (outcome, trial_record_dict)
-        Otherwise returns (None, None).
+            (outcome, trial_record_dict, feedback_dict_or_None)
+        Otherwise returns (None, None, None).
         """
         # Update trial time
-        self.t_since_spawn += dt
+        self.t_since_spawn = self._elapsed_since_spawn(dt)
 
         # Track when we first cross the inner boundary
         dx = self.cx - self.cx_sector
@@ -814,7 +892,6 @@ class Bird:
 
             return info["outcome"], info["record"], feedback
 
-
         # Move bird
         self.cx += self.vx * dt
         self.cy += self.vy * dt
@@ -827,8 +904,7 @@ class Bird:
             return outcome, record, None
 
         return None, None, None
-      
-      
+
     def _immediate_finish(self):
         outcome = self._trial_outcome()
         record = self._build_trial_record(outcome)
@@ -847,7 +923,6 @@ class Bird:
         self.reset()
         return info
 
-
     def _feedback_from_outcome(self, outcome):
         """
         Return feedback text + color based on the trial outcome.
@@ -860,6 +935,14 @@ class Bird:
 
         if outcome == "NR":
             return "TOO SLOW!", (255, 220, 120)  # yellow
+
+        # Seagull-specific feedback
+        if outcome == "GULL_HIT":
+            return "GULL!", (120, 255, 140)      # green-ish
+        if outcome == "GULL_MISS":
+            return "MISSED GULL!", (255, 80, 80) # red-ish
+        if outcome == "GULL_FALSE_ALARM":
+            return "NO GULL!", (255, 80, 80)     # red-ish
 
         return "", (255, 255, 255)
 
@@ -917,7 +1000,7 @@ class Ownship:
   
 # ---------------------------- CLI parsing --------------------------------
   
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--ownship-csv",
@@ -926,25 +1009,52 @@ def parse_args():
         default=None,
         help="Path to CSV file with ownship data (optional)"
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--results-csv",
+        type=str,
+        default=RESULTS_CSV,
+        help="Output CSV filename written under the output directory",
+    )
+    parser.add_argument(
+        "--precision-rt",
+        action="store_true",
+        help="Use high-resolution monotonic timing for reaction times",
+    )
+    return parser.parse_args(argv)
 
 
 
 # ------------------------------ Main loop --------------------------------
   
-def main():
-    args = parse_args()
+def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=True):
+    args = parse_args(argv)
+    if args.results_csv == RESULTS_CSV and default_results_csv != RESULTS_CSV:
+        args.results_csv = default_results_csv
+    if default_precision_timing:
+        args.precision_rt = True
     
     # Counters for response classifications
-    hits = 0
-    misses = 0
-    false_alarms = 0
-    correct_rejects = 0
-    nr_misses = 0    # non-responses (no valid C/N before inner radius)
+    hits = 0              # stim = "THREAT" and keypress = "C"
+    misses = 0           # stim = "THREAT" and keypress = "N"
+    false_alarms = 0     # stim = "SAFE" and keypress = "C"
+    correct_rejects = 0  # stim = "SAFE" and keypress = "N"
+
+    # Non-responses (no valid C/N/9 before inner radius)
+    # Split into THREAT/SAFE vs GULL NR
+    nr_misses = 0        # THREAT/SAFE trials with NR
+    pm_nr_misses = 0     # GULL trials with NR
+
+    # PM / GULL counters
+    pm_hits = 0          # stim = "GULL" and keypress = "9" in time
+    pm_misses = 0        # stim = "GULL" and wrong C/N response (in time)
+    pm_false_alarms = 0  # stim != "GULL" and keypress = "9"
+
     
     # RT storage (seconds from appearance for first C/N)
     all_rts = []
+    gull_rts = []   # RTs for GULL_HIT trials only
     
+    # Feedback storage
     feedback_list = []
   
     # ---------------------- Ownship / intruder setup ----------------------
@@ -980,16 +1090,18 @@ def main():
         
     # Main font
     if os.path.exists(font_path):
-        font = pygame.font.Font(font_path, 24)
+        font       = pygame.font.Font(font_path, 24)
         font_small = pygame.font.Font(font_path, 16)
+        font_tiny  = pygame.font.Font(font_path, 10)
     else:
-        font = pygame.font.SysFont("Arial", 24)
+        font       = pygame.font.SysFont("Arial", 24)
         font_small = pygame.font.SysFont("Arial", 16)
+        font_tiny  = pygame.font.SysFont("Arial", 10)
 
     
     # ---------------------- Trial logging setup ----------------------
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    results_path = os.path.join(RESULTS_DIR, RESULTS_CSV)
+    results_path = os.path.join(RESULTS_DIR, args.results_csv)
 
     # Define fieldnames explicitly for stable column order
     fieldnames = [
@@ -1008,7 +1120,7 @@ def main():
         
     # ----------------------- Ownship sprite -----------------------
     happy_path = os.path.join(script_dir, "images", "face_happy2.png")
-    worried_path = os.path.join(script_dir, "images", "face_worried3.png")
+    worried_path = os.path.join(script_dir, "images", "face_worried2.png")
 
     scale_factor = 0.1 * GLOBAL_SCALE  # same scaling for both faces
 
@@ -1039,15 +1151,16 @@ def main():
     # -------------------------- Bird sprite ------------------------------
     bird = None
     bird_img_path = os.path.join(script_dir, "images", "bird1.png")
+    gull_img_path = os.path.join(script_dir, "images", "gull1.png")
 
     # Effective sprite scale = base scale * GLOBAL_SCALE
-    # BIRD_BASE_SCALE = 0.1
     bird_scale = BIRD_BASE_SCALE * GLOBAL_SCALE
 
+    # ---- Load / build base bird sprite ----
     if os.path.exists(bird_img_path):
         print(f"[Bird] Loading sprite from {bird_img_path}")
         bird_img_raw = pygame.image.load(bird_img_path).convert_alpha()
-        
+
         # Scale with global zoom
         orig_w, orig_h = bird_img_raw.get_size()
         new_size = (int(orig_w * bird_scale), int(orig_h * bird_scale))
@@ -1055,29 +1168,42 @@ def main():
         # For pixel art you *might* prefer scale() (nearest neighbour);
         # smoothscale() will soften it a bit.
         bird_img = pygame.transform.smoothscale(bird_img_raw, new_size)
-        # bird_img = pygame.transform.scale(bird_img_raw, new_size)  # try this if you want it sharper
-
-        bird = Bird(bird_img, int(w_csv), int(h_csv), speed_px_s=200.0 * GLOBAL_SCALE)
-
-
+        # bird_img = pygame.transform.scale(bird_img_raw, new_size)
     else:
-        print(f"[Bird] WARNING: {bird_img_path} not found. "
-              "Using placeholder debug sprite.")
-        # Fallback: draw a bright magenta triangle so you *cannot* miss it
+        print(f"[Bird] WARNING: {bird_img_path} not found. Using placeholder for BIRD.")
         placeholder = pygame.Surface((40, 40), pygame.SRCALPHA)
         pygame.draw.polygon(
             placeholder,
             (255, 0, 255, 255),
             [(20, 0), (0, 40), (40, 40)]
         )
-
-        # Scale placeholder with same bird_scale
         ph_w, ph_h = placeholder.get_size()
         ph_size = (int(ph_w * bird_scale), int(ph_h * bird_scale))
-        placeholder_scaled = pygame.transform.smoothscale(placeholder, ph_size)
+        bird_img = pygame.transform.smoothscale(placeholder, ph_size)
 
-        bird = Bird(placeholder_scaled, int(w_csv), int(h_csv), speed_px_s=200.0 * GLOBAL_SCALE)
+    # ---- Load / build seagull sprite ----
+    gull_img = None
+    if os.path.exists(gull_img_path):
+        print(f"[Bird] Loading GULL sprite from {gull_img_path}")
+        gull_img_raw = pygame.image.load(gull_img_path).convert_alpha()
 
+        g_w, g_h = gull_img_raw.get_size()
+        g_size = (int(g_w * bird_scale), int(g_h * bird_scale))
+        gull_img = pygame.transform.smoothscale(gull_img_raw, g_size)
+        # gull_img = pygame.transform.scale(gull_img_raw, g_size)
+    else:
+        print(f"[Bird] WARNING: {gull_img_path} not found. GULL trials will reuse bird sprite.")
+        gull_img = bird_img  # fallback
+
+    # Construct Bird with separate BIRD and GULL sprites
+    bird = Bird(
+        bird_image_surf=bird_img,
+        gull_image_surf=gull_img,
+        screen_w=int(w_csv),
+        screen_h=int(h_csv),
+        speed_px_s=200.0 * GLOBAL_SCALE,
+        use_precision_timing=args.precision_rt,
+    )
 
   
     # ---------- Noise surfaces & specks (inside central circle) ----------
@@ -1227,11 +1353,25 @@ def main():
                             elif outcome == "CORRECT_REJECT":
                                 correct_rejects += 1
                             elif outcome == "NR":
-                                nr_misses += 1
+                                # Use record label to distinguish GULL vs normal bird NR
+                                if info["record"].get("label") == "SEAGULL":
+                                    pm_nr_misses += 1
+                                else:
+                                    nr_misses += 1
+                            elif outcome == "GULL_HIT":
+                                pm_hits += 1
+                                rt_app = info["record"].get("rt_from_appearance", "")
+                                if isinstance(rt_app, (int, float)):
+                                    gull_rts.append(rt_app)
+                            elif outcome == "GULL_MISS":
+                                pm_misses += 1
+                            elif outcome == "GULL_FALSE_ALARM": 
+                                pm_false_alarms += 1
 
                             print("[Bird outcome]", outcome,
                                   f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects})")
+                                  f"FA={false_alarms}, CR={correct_rejects}, "
+                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
 
 
                 # N = respond "SAFE"
@@ -1251,6 +1391,7 @@ def main():
                             if isinstance(rt_app, (int, float)):
                                 all_rts.append(rt_app)
 
+                            # Counters
                             outcome = info["outcome"]
                             if outcome == "HIT":
                                 hits += 1
@@ -1261,18 +1402,83 @@ def main():
                             elif outcome == "CORRECT_REJECT":
                                 correct_rejects += 1
                             elif outcome == "NR":
-                                nr_misses += 1
+                                # Use record label to distinguish GULL vs normal bird NR
+                                if info["record"].get("label") == "SEAGULL":
+                                    pm_nr_misses += 1
+                                else:
+                                    nr_misses += 1
+                            elif outcome == "GULL_HIT":
+                                pm_hits += 1
+                                rt_app = info["record"].get("rt_from_appearance", "")
+                                if isinstance(rt_app, (int, float)):
+                                    gull_rts.append(rt_app)
+                            elif outcome == "GULL_MISS":
+                                pm_misses += 1
+                            elif outcome == "GULL_FALSE_ALARM": 
+                                pm_false_alarms += 1
 
                             print("[Bird outcome]", outcome,
                                   f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects})")
+                                  f"FA={false_alarms}, CR={correct_rejects}, "
+                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
 
+
+                # 9 = respond "SEAGULL" (oddball)
+                elif event.key == pygame.K_9:
+                    if bird is not None:
+                        info = bird.register_response("SEAGULL")
+                        if info:
+                            # Floating feedback
+                            feedback_list.append(FloatingFeedback(
+                                info["fb_text"], info["fb_color"],
+                                info["x"], info["y"],
+                                info["vx"], info["vy"]
+                            ))
+
+                            # Log
+                            results_writer.writerow(info["record"])
+
+                            # RT tracking
+                            rt_app = info["record"].get("rt_from_appearance", "")
+                            if isinstance(rt_app, (int, float)):
+                                all_rts.append(rt_app)
+
+                            # Counters
+                            outcome = info["outcome"]
+                            if outcome == "HIT":
+                                hits += 1
+                            elif outcome == "MISS":
+                                misses += 1
+                            elif outcome == "FALSE_ALARM":
+                                false_alarms += 1
+                            elif outcome == "CORRECT_REJECT":
+                                correct_rejects += 1
+                            elif outcome == "NR":
+                                # Use record label to distinguish GULL vs normal bird NR
+                                if info["record"].get("label") == "SEAGULL":
+                                    pm_nr_misses += 1
+                                else:
+                                    nr_misses += 1
+                            elif outcome == "GULL_HIT":
+                                pm_hits += 1
+                                rt_app = info["record"].get("rt_from_appearance", "")
+                                if isinstance(rt_app, (int, float)):
+                                    gull_rts.append(rt_app)
+                            elif outcome == "GULL_MISS":
+                                pm_misses += 1
+                            elif outcome == "GULL_FALSE_ALARM": 
+                                pm_false_alarms += 1
+
+                            print("[Bird outcome]", outcome,
+                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
+                                  f"FA={false_alarms}, CR={correct_rejects}, "
+                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
 
 
         dt_ms = clock.tick(FPS)
         dt = dt_ms / 1000.0
 
-        # Update bird motion, log trials, and update counters
+
         # Update bird motion, log trials, update counters & RT list
         if bird is not None:
             outcome, trial_record, fb = bird.update(dt)
@@ -1304,11 +1510,25 @@ def main():
                 elif outcome == "CORRECT_REJECT":
                     correct_rejects += 1
                 elif outcome == "NR":
-                    nr_misses += 1
+                    # Distinguish GULL vs THREAT/SAFE NR using the label
+                    if trial_record is not None and trial_record.get("label") == "SEAGULL":
+                        pm_nr_misses += 1
+                    else:
+                        nr_misses += 1
+                elif outcome == "GULL_HIT":
+                    pm_hits += 1
+                    rt_app = trial_record.get("rt_from_appearance", "")
+                    if isinstance(rt_app, (int, float)):
+                        gull_rts.append(rt_app)
+                elif outcome == "GULL_MISS":
+                    pm_misses += 1
+                elif outcome == "GULL_FALSE_ALARM": 
+                    pm_false_alarms += 1
 
                 print("[Bird outcome]", outcome,
-                      f"(H={hits}, M={misses}, NR={nr_misses}, "
-                      f"FA={false_alarms}, CR={correct_rejects})")
+                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
+                                  f"FA={false_alarms}, CR={correct_rejects}, "
+                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
 
 
 
@@ -1451,72 +1671,6 @@ def main():
                           WIND_LAYER_WIND_WEIGHT * wind_vx)
         wind_layer_vy = (-WIND_LAYER_OWNSHIP_WEIGHT * ownship_vy +
                           WIND_LAYER_WIND_WEIGHT * wind_vy)
-  
-  
-        # # ------------------- Ground layer update/draw ----------------------
-        # GROUND_SURFACE.fill((0, 0, 0, 0))
-        # 
-        # for speck in ground_specks:
-        #     speck["x"] += ground_vx * dt
-        #     speck["y"] += ground_vy * dt
-        # 
-        #     dx = speck["x"] - cx
-        #     dy = speck["y"] - cy
-        # 
-        #     # If it leaves the circular sector, respawn inside it
-        #     if dx*dx + dy*dy > r2:
-        #         while True:
-        #             rx = random.uniform(cx - big_radius, cx + big_radius)
-        #             ry = random.uniform(cy - big_radius, cy + big_radius)
-        #             dx2 = rx - cx
-        #             dy2 = ry - cy
-        #             if dx2*dx2 + dy2*dy2 <= r2:
-        #                 speck["x"] = rx
-        #                 speck["y"] = ry
-        #                 dx = dx2
-        #                 dy = dy2
-        #                 break
-        # 
-        #     ix = int(speck["x"])
-        #     iy = int(speck["y"])
-        # 
-        #     if 0 <= ix < w and 0 <= iy < h:
-        #         # Radial factor: brighter in the centre, darker near the edge
-        #         r_norm = math.sqrt(dx*dx + dy*dy) / float(big_radius)
-        #         if r_norm > 1.0:
-        #             r_norm = 1.0
-        # 
-        #         # Interpolate between highlight (centre) and shadow (edge)
-        #         t = r_norm
-        #         base_r = (1.0 - t) * GROUND_HIGHLIGHT[0] + t * GROUND_SHADOW[0]
-        #         base_g = (1.0 - t) * GROUND_HIGHLIGHT[1] + t * GROUND_SHADOW[1]
-        #         base_b = (1.0 - t) * GROUND_HIGHLIGHT[2] + t * GROUND_SHADOW[2]
-        # 
-        #         # Mix in the mid desert tone slightly for cohesion
-        #         base_r = 0.7 * base_r + 0.3 * GROUND_COLOR[0]
-        #         base_g = 0.7 * base_g + 0.3 * GROUND_COLOR[1]
-        #         base_b = 0.7 * base_b + 0.3 * GROUND_COLOR[2]
-        # 
-        #         # Small jitter for mottled sand
-        #         jitter = random.randint(-8, 8)
-        #         r_col = max(0, min(255, int(base_r) + jitter))
-        #         g_col = max(0, min(255, int(base_g) + jitter))
-        #         b_col = max(0, min(255, int(base_b) + jitter))
-        # 
-        #         # Slightly fade out towards the edge, then jitter
-        #         base_alpha = GROUND_ALPHA * (1.0 - 0.5 * r_norm)
-        #         alpha = jitter_alpha(base_alpha)
-        # 
-        # 
-        #         # Vary speck size a bit (mostly 1px, occasional 2px grains)
-        #         radius = 1 if random.random() < 0.85 else 2
-        # 
-        #         pygame.draw.circle(
-        #             GROUND_SURFACE,
-        #             (r_col, g_col, b_col, alpha),
-        #             (ix, iy),
-        #             radius
-        #         )
 
   
         # -------------------- Wind layer update/draw -----------------------
@@ -1621,8 +1775,6 @@ def main():
         screen.blit(sep_surf, (cx - SEP_RADIUS_PX, cy - SEP_RADIUS_PX))
 
 
-
-
         # ----------------------- Wind compass HUD --------------------------
         # Compass center on right side of screen
         compass_cx = w - COMPASS_RADIUS - COMPASS_MARGIN_X
@@ -1676,6 +1828,60 @@ def main():
             center=(compass_cx, compass_cy + COMPASS_RADIUS + 20)
         )
         screen.blit(speed_surf, speed_rect)
+        
+        
+        # --------------- ACC / RT HUD (top-right, above compass) -------------
+        # Recompute summary strings here to avoid scope issues
+
+        # Main THREAT/SAFE accuracy & RT
+        total_scored = hits + misses + false_alarms + correct_rejects + nr_misses
+        correct = hits + correct_rejects
+        if total_scored > 0:
+            acc = correct / total_scored
+            acc_pct = acc * 100.0
+            acc_str = f"ACC {acc_pct:5.1f}%"
+        else:
+            acc_str = "ACC --- %"
+
+        if all_rts:
+            mean_rt = sum(all_rts) / len(all_rts)
+            mrt_str = f"MEAN RT {mean_rt:.3f} s"
+        else:
+            mrt_str = "MEAN RT ---"
+
+        # PM / GULL accuracy & RT
+        pm_scored = pm_hits + pm_misses + pm_nr_misses
+        if pm_scored > 0:
+            pm_acc = pm_hits / pm_scored
+            pm_acc_pct = pm_acc * 100.0
+            pm_acc_str = f"PM ACC {pm_acc_pct:5.1f}%"
+        else:
+            pm_acc_str = "PM ACC --- %"
+
+        if gull_rts:
+            pm_mean_rt = sum(gull_rts) / len(gull_rts)
+            pm_rt_str = f"PM MEAN RT {pm_mean_rt:.3f} s"
+        else:
+            pm_rt_str = "PM MEAN RT ---"
+
+        hud_lines = [acc_str, mrt_str, pm_acc_str, pm_rt_str]
+        hud_surfs = [font_small.render(line, True, TEXT_COLOR) for line in hud_lines]
+
+        line_spacing = 4
+        total_h = sum(s.get_height() for s in hud_surfs) + line_spacing * (len(hud_surfs) - 1)
+
+        hud_center_x = compass_cx
+        top_of_compass = compass_cy - COMPASS_RADIUS
+        # Start a bit above the compass circle
+        hud_y_start = max(10, top_of_compass - total_h - 40)
+
+        y_cur = hud_y_start
+        for surf in hud_surfs:
+            rect = surf.get_rect(center=(hud_center_x, y_cur + surf.get_height() // 2))
+            screen.blit(surf, rect)
+            y_cur += surf.get_height() + line_spacing
+
+
   
         # ----------------------- Draw ownship circle -----------------------
         x = int(ownship["x_px"])
@@ -1778,92 +1984,135 @@ def main():
             )
 
 
-        # ----------------------- Outcome bar chart & RT hist -----------------------
-        # Layout: 10 px from left; bar centered in upper half, hist in lower half
+        # ----------------------- Outcome bar charts & RT hist -----------------------
+                # ----------------------- Outcome bar charts & RT hists -----------------------
+        # Left-hand panel: two bar charts (THREAT/SAFE, then PM) + two RT histograms
+
         panel_x = 10
         panel_w = 260
-        panel_h = 130
 
-        mid_y = h // 2
+        bar_h   = 100   # height for each bar chart
+        hist_h  = 80    # height for each histogram
+        v_gap   = 10
 
-        # Bar chart: centered in upper half
-        bar_center_y = mid_y // 2
-        bar_y = bar_center_y - panel_h // 2
-
-        # Histogram: centered in lower half
-        hist_center_y = (mid_y + h) // 2
-        hist_y = hist_center_y - panel_h // 2
-
-        bar_rect = (panel_x, bar_y, panel_w, panel_h)
-        hist_rect = (panel_x, hist_y, panel_w, panel_h)
-
-        # Accuracy and mean RT summary (centre left, between bar & hist)
-        total_scored = hits + misses + false_alarms + correct_rejects
+        # ---- Main (THREAT/SAFE) accuracy & RT summaries -------------------
+        total_scored = hits + misses + false_alarms + correct_rejects + nr_misses
         correct = hits + correct_rejects
 
         if total_scored > 0:
             acc = correct / total_scored
             acc_pct = acc * 100.0
-            acc_str = f"ACC {acc_pct:5.1f}%"
         else:
-            acc_str = "ACC --- %"
+            acc = None
 
         if all_rts:
             mean_rt = sum(all_rts) / len(all_rts)
-            mrt_str = f"MEAN RT {mean_rt:.3f} s"
         else:
-            mrt_str = "MEAN RT ---"
+            mean_rt = None
 
-        # Render on two lines
-        acc_surf = font.render(acc_str, True, TEXT_COLOR)
-        mrt_surf = font.render(mrt_str, True, TEXT_COLOR)
+        # ---- PM / GULL accuracy & RT summaries ----------------------------
+        pm_scored = pm_hits + pm_misses + pm_nr_misses
+        if pm_scored > 0:
+            pm_acc = pm_hits / pm_scored
+            pm_acc_pct = pm_acc * 100.0
+        else:
+            pm_acc = None
 
-        # Vertical gap between bar chart and histogram
-        gap_top = bar_y + panel_h
-        gap_bottom = hist_y
+        if gull_rts:
+            pm_mean_rt = sum(gull_rts) / len(gull_rts)
+        else:
+            pm_mean_rt = None
 
-        total_text_h = acc_surf.get_height() + mrt_surf.get_height() + 4  # 4 px spacing
-        stats_y_start = gap_top + (gap_bottom - gap_top - total_text_h) / 2
+        # ---- Layout for charts on the left (vertically centred) ----------
+        total_block_h = 2 * bar_h + 2 * hist_h + 3 * v_gap
+        block_top_y = (h - total_block_h) / 2  # centre the whole stack
 
-        stats_x = panel_x  # left side
+        bar1_y   = int(block_top_y)
+        bar1_rect = (panel_x, bar1_y, panel_w, bar_h)
 
-        # First line: ACC
-        screen.blit(acc_surf, (stats_x, stats_y_start))
-        # Second line: MEAN RT
-        screen.blit(mrt_surf, (stats_x, stats_y_start + acc_surf.get_height() + 4))
+        bar2_y   = bar1_y + bar_h + v_gap
+        bar2_rect = (panel_x, bar2_y, panel_w, bar_h)
 
+        hist1_y  = bar2_y + bar_h + v_gap
+        hist1_rect = (panel_x, hist1_y, panel_w, hist_h)
 
-        # Now draw bar chart and histogram
-        outcome_counts = {
-            "HIT": hits,
-            "MISS": misses,
+        hist2_y  = hist1_y + hist_h + v_gap
+        hist2_rect = (panel_x, hist2_y, panel_w, hist_h)
+
+        # ---- THREAT/SAFE bar chart (H, M, NR, FA, CR) ---------------------
+        outcome_counts_main = {
+            "HIT":  hits,
+            "MISS":  misses,
             "NR": nr_misses,
             "FA": false_alarms,
             "CR": correct_rejects,
         }
-        # Pass overall accuracy (acc) as proportion correct for red line
-        prop_correct = acc if total_scored > 0 else None
-        draw_bar_chart(screen, font_small, bar_rect, outcome_counts, prop_correct=prop_correct)
+        prop_correct_main = acc if acc is not None else None
 
-        draw_rt_histogram(screen, font_small, hist_rect, all_rts)
+        draw_bar_chart(
+            screen,
+            font_small,   # axis font
+            font_tiny,    # x-axis labels
+            bar1_rect,
+            outcome_counts_main,
+            prop_correct=prop_correct_main,
+        )
+
+        # ---- PM / GULL bar chart (PM HIT / MISS / NR / FA) ----------------
+        outcome_counts_pm = {
+            "PM HIT":  pm_hits,
+            "PM MISS":  pm_misses,
+            "PM NR": pm_nr_misses,
+            "PM FA": pm_false_alarms,
+        }
+        prop_correct_pm = pm_acc if pm_acc is not None else None
+
+        draw_bar_chart(
+            screen,
+            font_small,
+            font_tiny,
+            bar2_rect,
+            outcome_counts_pm,
+            prop_correct=prop_correct_pm,
+        )
+
+        # ---- RT histogram (all RTs) with vertical mean line ----------------
+        draw_rt_histogram(
+            screen,
+            font_small,
+            hist1_rect,
+            all_rts,
+            mean_rt=mean_rt,
+        )
+
+        # ---- Second RT histogram (PM/GULL RTs only) ------------------------
+        draw_rt_histogram(
+            screen,
+            font_small,
+            hist2_rect,
+            gull_rts,
+            mean_rt=pm_mean_rt,
+        )
 
 
-        # SPD/BRG label at top of screen
-        label_parts = []
-        if ownship["speed_kn"] is not None:
-            label_parts.append(f"SPD {ownship['speed_kn']:.0f} kt")
-        if ownship["bearing_deg"] is not None:
-            label_parts.append(f"BRG {ownship['bearing_deg']:.0f}°")
-  
-        if label_parts:
-            label = "   ".join(label_parts)
-            draw_text(
-                screen,
-                font,
-                label,
-                TEXT_COLOR,
-                (w // 2, 30),
-            )
+
+
+        # # ---- SPD/BRG label at top of screen --------------------------------
+        # label_parts = []
+        # if ownship["speed_kn"] is not None:
+        #     label_parts.append(f"SPD {ownship['speed_kn']:.0f} kt")
+        # if ownship["bearing_deg"] is not None:
+        #     label_parts.append(f"BRG {ownship['bearing_deg']:.0f}°")
+        # 
+        # if label_parts:
+        #     label = "   ".join(label_parts)
+        #     draw_text(
+        #         screen,
+        #         font,
+        #         label,
+        #         TEXT_COLOR,
+        #         (w // 2, 30),
+        #     )
             
         # Update & draw floating feedback
         to_remove = []
@@ -1875,9 +2124,9 @@ def main():
         for fb in to_remove:
             feedback_list.remove(fb)
 
-        
-        score_label = (f"HIT {hits}   MISS {misses}   "
-                       f"FA {false_alarms}   CR {correct_rejects}   NR {nr_misses}")
+        score_label = (f"HIT {hits}  MISS {misses}  "
+                       f"FA {false_alarms}  CR {correct_rejects}  NR {nr_misses}  "
+                       f"PM HIT {pm_hits}  PM MISS {pm_misses}  PM FA {pm_false_alarms}  PM NR {pm_nr_misses}")
         draw_text(
             screen,
             font,
@@ -1906,8 +2155,8 @@ def main():
                 )
                 
         # ------------------- Update ownship mood by accuracy -------------
-        # Only scored outcomes (no NR): HIT, MISS, FA, CR
-        total_scored = hits + misses + false_alarms + correct_rejects
+        # Include NR for THREAT/SAFE birds in the denominator
+        total_scored = hits + misses + false_alarms + correct_rejects + nr_misses
         correct = hits + correct_rejects
 
         if total_scored > 0:
