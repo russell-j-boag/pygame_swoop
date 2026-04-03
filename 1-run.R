@@ -1,20 +1,12 @@
 rm(list = ls())
 
 run_swoop <- function(
-    ownship_csv  = NULL,
     conda_env    = "r-pygame",
     atclab_script = "python/swoop.py",
     extra_args   = NULL
 ) {
   # Script must exist
   stopifnot(file.exists(atclab_script))
-  
-  # If a CSV is supplied, it must exist
-  if (!is.null(ownship_csv)) {
-    if (!file.exists(ownship_csv)) {
-      stop("ownship_csv does not exist: ", ownship_csv)
-    }
-  }
   
   # Load reticulate + activate env
   if (!requireNamespace("reticulate", quietly = TRUE)) {
@@ -28,11 +20,6 @@ run_swoop <- function(
   
   # Base args: always the script
   args <- c(atclab_script)
-  
-  # Add CSV flag only if provided
-  if (!is.null(ownship_csv)) {
-    args <- c(args, "--ownship-csv", normalizePath(ownship_csv))
-  }
   
   # Optional passthrough arguments
   if (!is.null(extra_args)) {

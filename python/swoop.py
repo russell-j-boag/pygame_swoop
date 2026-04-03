@@ -102,76 +102,6 @@ COMPASS_BG_COLOR   = (0, 0, 0)        # black circle background
 COMPASS_RING_COLOR = (80, 80, 80)     # outer ring
 
 
-# ------------------------------ Intruder ---------------------------------
-
-INTRUDER_COLOR        = (255, 120, 120)  # warm red-ish to pop against sea
-INTRUDER_RADIUS       = int(10 * GLOBAL_SCALE)
-INTRUDER_PX_PER_KT    = 0.3 * GLOBAL_SCALE
-INTRUDER_HEADING_LEN  = int(10 * GLOBAL_SCALE)   # small nose line to show heading
-
-
-
-# ---------------------------- CSV loading --------------------------------
-  
-def load_ownship_from_csv(path):
-    """
-    Read a single-row CSV with:
-      - x_dim, y_dim       : screen size (pixels)
-      - DOMS               : min separation vs intruder (NM)
-      - TTMS               : time to min sep (s)
-      - speed_intr_kn      : intruder speed (knots)
-      - bearing_intr_deg   : intruder heading (deg, 0=N, 90=E)
-      - intruder_x_px      : intruder start x (pixels)
-      - intruder_y_px      : intruder start y (pixels)
-
-    Returns (ownship, intruder, screen_w, screen_h).
-    """
-    global SCREEN_WIDTH, SCREEN_HEIGHT
-
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        row = next(reader)  # first row only
-
-    def parse_float(row, key, default=None):
-        if key in row and str(row[key]).strip() != "":
-            return float(row[key])
-        return default
-
-    # Screen dimensions
-    x_dim = parse_float(row, "x_dim", default=SCREEN_WIDTH)
-    y_dim = parse_float(row, "y_dim", default=SCREEN_HEIGHT)
-
-    SCREEN_WIDTH  = int(x_dim)
-    SCREEN_HEIGHT = int(y_dim)
-
-    ownship = {
-        "x_px": SCREEN_WIDTH / 2.0,
-        "y_px": SCREEN_HEIGHT / 2.0,
-    }
-
-    # Conflict geometry & intruder fields from the CSV
-    doms   = parse_float(row, "DOMS",            default=None)
-    ttms   = parse_float(row, "TTMS",            default=None)
-    s_intr = parse_float(row, "speed_intr_kn",   default=None)
-    b_intr = parse_float(row, "bearing_intr_deg", default=None)
-    ix     = parse_float(row, "intruder_x_px",   default=None)
-    iy     = parse_float(row, "intruder_y_px",   default=None)
-
-    intruder = None
-    if ix is not None and iy is not None:
-        intruder = {
-            "x_px": ix,
-            "y_px": iy,
-            "speed_kn": s_intr,
-            "bearing_deg": b_intr,
-            "DOMS": doms,
-            "TTMS": ttms,
-        }
-
-    return ownship, intruder, SCREEN_WIDTH, SCREEN_HEIGHT
-
-  
-
 # --------------------------- Lévy-flight helper ---------------------------
 
 def levy_step(scale, dt, alpha=1.5, max_step=None):
@@ -967,13 +897,6 @@ class Ownship:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--ownship-csv",
-        type=str,
-        required=False,
-        default=None,
-        help="Path to CSV file with ownship data (optional)"
-    )
-    parser.add_argument(
         "--results-csv",
         type=str,
         default=RESULTS_CSV,
@@ -1021,23 +944,13 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
     # Feedback storage
     feedback_list = []
   
-    # ---------------------- Ownship / intruder setup ----------------------
-    if args.ownship_csv is not None and os.path.exists(args.ownship_csv):
-        # Load from CSV as usual
-        ownship, intruder, w_csv, h_csv = load_ownship_from_csv(args.ownship_csv)
-        print(f"[Init] Loaded ownship from {args.ownship_csv}")
-    else:
-        # Fallback defaults: no CSV
-        print("[Init] No ownship CSV provided or file not found; using defaults.")
-        w_csv = SCREEN_WIDTH
-        h_csv = SCREEN_HEIGHT
-
-        ownship = {
-            "x_px": w_csv / 2.0,
-            "y_px": h_csv / 2.0,
-        }
-
-        intruder = None
+    # ---------------------- Display setup ----------------------
+    w_csv = SCREEN_WIDTH
+    h_csv = SCREEN_HEIGHT
+    ownship = {
+        "x_px": w_csv / 2.0,
+        "y_px": h_csv / 2.0,
+    }
 
   
     pygame.init()
@@ -1517,37 +1430,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         if BG_SECTOR_SURFACE is not None:
             screen.blit(BG_SECTOR_SURFACE, (0, 0))
         
-        # ---------------------- Update intruder (if any) ----------------------
-        if intruder is not None:
-            # Default missing values
-            if intruder.get("speed_kn") is None:
-                intruder["speed_kn"] = 0.0
-            if intruder.get("bearing_deg") is None:
-                intruder["bearing_deg"] = 0.0
-
-            spd_i = intruder["speed_kn"]
-            brg_i = intruder["bearing_deg"]
-
-            # Aviation-style: 0° = North, 90° = East
-            ang_i = math.radians(brg_i)
-            vx_i = math.sin(ang_i) * spd_i * INTRUDER_PX_PER_KT
-            vy_i = -math.cos(ang_i) * spd_i * INTRUDER_PX_PER_KT
-
-            intruder["x_px"] += vx_i * dt
-            intruder["y_px"] += vy_i * dt
-
-            # Let it wrap if it leaves the screen horizontally/vertically
-            if intruder["x_px"] < 0:
-                intruder["x_px"] += w
-            elif intruder["x_px"] > w:
-                intruder["x_px"] -= w
-
-            if intruder["y_px"] < 0:
-                intruder["y_px"] += h
-            elif intruder["y_px"] > h:
-                intruder["y_px"] -= h
-
-  
         # ---------- Compute background velocities --------------------------
         # With the player fixed at the display center, only the prevailing
         # wind contributes to background motion.
@@ -1773,34 +1655,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         y = int(ownship["y_px"])
         pygame.draw.circle(screen, CIRCLE_COLOR, (x, y), CIRCLE_RADIUS, 1)
         
-        # ----------------------- Draw intruder (if any) -----------------------
-        if intruder is not None:
-            ix = int(intruder["x_px"])
-            iy = int(intruder["y_px"])
-
-            # Main intruder dot
-            pygame.draw.circle(
-                screen,
-                INTRUDER_COLOR,
-                (ix, iy),
-                INTRUDER_RADIUS,
-                0
-            )
-
-            # Small heading "nose" to show direction of travel
-            if intruder.get("bearing_deg") is not None:
-                ang_i = math.radians(intruder["bearing_deg"])
-                nose_dx = math.sin(ang_i) * INTRUDER_HEADING_LEN
-                nose_dy = -math.cos(ang_i) * INTRUDER_HEADING_LEN
-
-                pygame.draw.line(
-                    screen,
-                    INTRUDER_COLOR,
-                    (ix, iy),
-                    (int(ix + nose_dx), int(iy + nose_dy)),
-                    2,
-                )
-
         # ----------------------- Outcome bar charts & RT hist -----------------------
         # Left-hand panel: two bar charts (THREAT/SAFE, then PM) + two RT histograms
 
@@ -1931,25 +1785,6 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
             (w // 2, h - 30),  # bottom centre
         )
 
-
-        # Intruder HUD (optional)
-        if intruder is not None:
-            intr_parts = []
-            if intruder.get("speed_kn") is not None:
-                intr_parts.append(f"INTR SPD {intruder['speed_kn']:.0f} kt")
-            if intruder.get("bearing_deg") is not None:
-                intr_parts.append(f"INTR BRG {intruder['bearing_deg']:.0f}°")
-
-            if intr_parts:
-                intr_label = "   ".join(intr_parts)
-                draw_text(
-                    screen,
-                    font,
-                    intr_label,
-                    TEXT_COLOR,
-                    (w // 2, 60),  # slightly below ownship label
-                )
-                
         # ------------------- Update ownship mood by accuracy -------------
         # Include NR for THREAT/SAFE birds in the denominator
         total_scored = hits + misses + false_alarms + correct_rejects + nr_misses
