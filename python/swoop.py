@@ -1,15 +1,18 @@
 # swoop.py
-import pygame
+import atexit
 import csv
 import os
 import argparse
 import math
 import random 
 import time
+import pygame
 
 # -------------------------- Output logging -------------------------------
 
-RESULTS_DIR = "output"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "output")
 RESULTS_CSV = "results_swoop_precision_rt.csv"
 
 # --------------------------- Global scale --------------------------------
@@ -907,6 +910,17 @@ def parse_args(argv=None):
         action="store_true",
         help="Use high-resolution monotonic timing for reaction times",
     )
+    parser.add_argument(
+        "--max-trials",
+        type=int,
+        default=None,
+        help="Stop automatically after the given number of completed trials",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Use SDL dummy drivers so the task can be smoke-tested without a display",
+    )
     return parser.parse_args(argv)
 
 
@@ -919,6 +933,11 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         args.results_csv = default_results_csv
     if default_precision_timing:
         args.precision_rt = True
+    if args.max_trials is not None and args.max_trials < 1:
+        raise ValueError("--max-trials must be a positive integer")
+    if args.headless:
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     
     # Counters for response classifications
     hits = 0              # stim = "THREAT" and keypress = "C"
@@ -960,8 +979,7 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
     clock = pygame.time.Clock()
   
     # Font: use bundled Roboto if present, else a system default
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    font_path  = os.path.join(script_dir, "fonts", "Roboto-Light.ttf")
+    font_path  = os.path.join(SCRIPT_DIR, "fonts", "Roboto-Light.ttf")
         
     # Main font
     if os.path.exists(font_path):
@@ -988,14 +1006,16 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         "rt_from_inner_boundary",
         "response_phase",
     ]
-    results_file = open(results_path, "w", newline="")
+    results_file = open(results_path, "w", newline="", buffering=1)
+    atexit.register(results_file.close)
+    atexit.register(pygame.quit)
     results_writer = csv.DictWriter(results_file, fieldnames=fieldnames)
     results_writer.writeheader()
 
         
     # ----------------------- Ownship sprite -----------------------
-    happy_path = os.path.join(script_dir, "images", "face_happy2.png")
-    worried_path = os.path.join(script_dir, "images", "face_worried2.png")
+    happy_path = os.path.join(SCRIPT_DIR, "images", "face_happy2.png")
+    worried_path = os.path.join(SCRIPT_DIR, "images", "face_worried2.png")
 
     scale_factor = 0.1 * GLOBAL_SCALE  # same scaling for both faces
 
@@ -1025,8 +1045,8 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
 
     # -------------------------- Bird sprite ------------------------------
     bird = None
-    bird_img_path = os.path.join(script_dir, "images", "bird1.png")
-    gull_img_path = os.path.join(script_dir, "images", "gull1.png")
+    bird_img_path = os.path.join(SCRIPT_DIR, "images", "bird1.png")
+    gull_img_path = os.path.join(SCRIPT_DIR, "images", "gull1.png")
 
     # Effective sprite scale = base scale * GLOBAL_SCALE
     bird_scale = BIRD_BASE_SCALE * GLOBAL_SCALE
@@ -1094,7 +1114,7 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
 
     # --------- Background image clipped to the circular sector ----------
     BG_SECTOR_SURFACE = None
-    bg_img_path = os.path.join(script_dir, "images", "ground1.png")
+    bg_img_path = os.path.join(SCRIPT_DIR, "images", "ground1.png")
 
     if os.path.exists(bg_img_path):
         print(f"[Background] Loading texture from {bg_img_path}")
@@ -1159,6 +1179,80 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
       
     # Accumulator for discrete wind updates
     wind_update_accum = 0.0
+
+    completed_trials = 0
+
+    def log_trial(outcome, record, feedback=None):
+        nonlocal hits, misses, false_alarms, correct_rejects
+        nonlocal nr_misses, pm_nr_misses, pm_hits, pm_misses, pm_false_alarms
+        nonlocal completed_trials, running
+
+        if feedback:
+            feedback_list.append(FloatingFeedback(
+                feedback["text"], feedback["color"],
+                feedback["x"], feedback["y"],
+                feedback["vx"], feedback["vy"]
+            ))
+
+        if record is not None:
+            results_writer.writerow(record)
+            results_file.flush()
+            rt_app = record.get("rt_from_appearance", "")
+            if isinstance(rt_app, (int, float)):
+                all_rts.append(rt_app)
+
+        if outcome is None:
+            return
+
+        if outcome == "HIT":
+            hits += 1
+        elif outcome == "MISS":
+            misses += 1
+        elif outcome == "FALSE_ALARM":
+            false_alarms += 1
+        elif outcome == "CORRECT_REJECT":
+            correct_rejects += 1
+        elif outcome == "NR":
+            if record is not None and record.get("label") == "SEAGULL":
+                pm_nr_misses += 1
+            else:
+                nr_misses += 1
+        elif outcome == "GULL_HIT":
+            pm_hits += 1
+            rt_app = record.get("rt_from_appearance", "") if record is not None else ""
+            if isinstance(rt_app, (int, float)):
+                gull_rts.append(rt_app)
+        elif outcome == "GULL_MISS":
+            pm_misses += 1
+        elif outcome == "GULL_FALSE_ALARM":
+            pm_false_alarms += 1
+
+        completed_trials += 1
+        print("[Bird outcome]", outcome,
+              f"(H={hits}, M={misses}, NR={nr_misses}, "
+              f"FA={false_alarms}, CR={correct_rejects}, "
+              f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
+
+        if args.max_trials is not None and completed_trials >= args.max_trials:
+            running = False
+
+    def handle_key_response(response_type):
+        if bird is None:
+            return
+
+        info = bird.register_response(response_type)
+        if not info:
+            return
+
+        feedback = {
+            "text": info["fb_text"],
+            "color": info["fb_color"],
+            "x": info["x"],
+            "y": info["y"],
+            "vx": info["vx"],
+            "vy": info["vy"],
+        }
+        log_trial(info["outcome"], info["record"], feedback)
   
     running = True
     while running:
@@ -1170,158 +1264,12 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                    
-                # C = respond "THREAT"
                 elif event.key == pygame.K_c:
-                    if bird is not None:
-                        info = bird.register_response("THREAT")
-                        if info:
-                            # Floating feedback
-                            feedback_list.append(FloatingFeedback(
-                                info["fb_text"], info["fb_color"],
-                                info["x"], info["y"],
-                                info["vx"], info["vy"]
-                            ))
-
-                            # Log
-                            results_writer.writerow(info["record"])
-
-                            # RT tracking
-                            rt_app = info["record"].get("rt_from_appearance", "")
-                            if isinstance(rt_app, (int, float)):
-                                all_rts.append(rt_app)
-
-                            # Counters
-                            outcome = info["outcome"]
-                            if outcome == "HIT":
-                                hits += 1
-                            elif outcome == "MISS":
-                                misses += 1
-                            elif outcome == "FALSE_ALARM":
-                                false_alarms += 1
-                            elif outcome == "CORRECT_REJECT":
-                                correct_rejects += 1
-                            elif outcome == "NR":
-                                # Use record label to distinguish GULL vs normal bird NR
-                                if info["record"].get("label") == "SEAGULL":
-                                    pm_nr_misses += 1
-                                else:
-                                    nr_misses += 1
-                            elif outcome == "GULL_HIT":
-                                pm_hits += 1
-                                rt_app = info["record"].get("rt_from_appearance", "")
-                                if isinstance(rt_app, (int, float)):
-                                    gull_rts.append(rt_app)
-                            elif outcome == "GULL_MISS":
-                                pm_misses += 1
-                            elif outcome == "GULL_FALSE_ALARM": 
-                                pm_false_alarms += 1
-
-                            print("[Bird outcome]", outcome,
-                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects}, "
-                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
-
-
-                # N = respond "SAFE"
+                    handle_key_response("THREAT")
                 elif event.key == pygame.K_n:
-                    if bird is not None:
-                        info = bird.register_response("SAFE")
-                        if info:
-                            feedback_list.append(FloatingFeedback(
-                                info["fb_text"], info["fb_color"],
-                                info["x"], info["y"],
-                                info["vx"], info["vy"]
-                            ))
-
-                            results_writer.writerow(info["record"])
-
-                            rt_app = info["record"].get("rt_from_appearance", "")
-                            if isinstance(rt_app, (int, float)):
-                                all_rts.append(rt_app)
-
-                            # Counters
-                            outcome = info["outcome"]
-                            if outcome == "HIT":
-                                hits += 1
-                            elif outcome == "MISS":
-                                misses += 1
-                            elif outcome == "FALSE_ALARM":
-                                false_alarms += 1
-                            elif outcome == "CORRECT_REJECT":
-                                correct_rejects += 1
-                            elif outcome == "NR":
-                                # Use record label to distinguish GULL vs normal bird NR
-                                if info["record"].get("label") == "SEAGULL":
-                                    pm_nr_misses += 1
-                                else:
-                                    nr_misses += 1
-                            elif outcome == "GULL_HIT":
-                                pm_hits += 1
-                                rt_app = info["record"].get("rt_from_appearance", "")
-                                if isinstance(rt_app, (int, float)):
-                                    gull_rts.append(rt_app)
-                            elif outcome == "GULL_MISS":
-                                pm_misses += 1
-                            elif outcome == "GULL_FALSE_ALARM": 
-                                pm_false_alarms += 1
-
-                            print("[Bird outcome]", outcome,
-                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects}, "
-                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
-
-
-                # 9 = respond "SEAGULL" (oddball)
+                    handle_key_response("SAFE")
                 elif event.key == pygame.K_9:
-                    if bird is not None:
-                        info = bird.register_response("SEAGULL")
-                        if info:
-                            # Floating feedback
-                            feedback_list.append(FloatingFeedback(
-                                info["fb_text"], info["fb_color"],
-                                info["x"], info["y"],
-                                info["vx"], info["vy"]
-                            ))
-
-                            # Log
-                            results_writer.writerow(info["record"])
-
-                            # RT tracking
-                            rt_app = info["record"].get("rt_from_appearance", "")
-                            if isinstance(rt_app, (int, float)):
-                                all_rts.append(rt_app)
-
-                            # Counters
-                            outcome = info["outcome"]
-                            if outcome == "HIT":
-                                hits += 1
-                            elif outcome == "MISS":
-                                misses += 1
-                            elif outcome == "FALSE_ALARM":
-                                false_alarms += 1
-                            elif outcome == "CORRECT_REJECT":
-                                correct_rejects += 1
-                            elif outcome == "NR":
-                                # Use record label to distinguish GULL vs normal bird NR
-                                if info["record"].get("label") == "SEAGULL":
-                                    pm_nr_misses += 1
-                                else:
-                                    nr_misses += 1
-                            elif outcome == "GULL_HIT":
-                                pm_hits += 1
-                                rt_app = info["record"].get("rt_from_appearance", "")
-                                if isinstance(rt_app, (int, float)):
-                                    gull_rts.append(rt_app)
-                            elif outcome == "GULL_MISS":
-                                pm_misses += 1
-                            elif outcome == "GULL_FALSE_ALARM": 
-                                pm_false_alarms += 1
-
-                            print("[Bird outcome]", outcome,
-                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects}, "
-                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
+                    handle_key_response("SEAGULL")
 
 
         dt_ms = clock.tick(FPS)
@@ -1331,53 +1279,8 @@ def main(argv=None, default_results_csv=RESULTS_CSV, default_precision_timing=Tr
         # Update bird motion, log trials, update counters & RT list
         if bird is not None:
             outcome, trial_record, fb = bird.update(dt)
-            
-            if fb:
-                feedback_list.append(FloatingFeedback(
-                    fb["text"], fb["color"],
-                    fb["x"], fb["y"],
-                    fb["vx"], fb["vy"]
-                ))
-
-            if outcome is not None:
-                # Log to CSV
-                if trial_record is not None:
-                    results_writer.writerow(trial_record)
-
-                    # Extract numeric RT from appearance if present
-                    rt_app = trial_record.get("rt_from_appearance", "")
-                    if isinstance(rt_app, (int, float)):
-                        all_rts.append(rt_app)
-
-                # Update summary counters
-                if outcome == "HIT":
-                    hits += 1
-                elif outcome == "MISS":
-                    misses += 1
-                elif outcome == "FALSE_ALARM":
-                    false_alarms += 1
-                elif outcome == "CORRECT_REJECT":
-                    correct_rejects += 1
-                elif outcome == "NR":
-                    # Distinguish GULL vs THREAT/SAFE NR using the label
-                    if trial_record is not None and trial_record.get("label") == "SEAGULL":
-                        pm_nr_misses += 1
-                    else:
-                        nr_misses += 1
-                elif outcome == "GULL_HIT":
-                    pm_hits += 1
-                    rt_app = trial_record.get("rt_from_appearance", "")
-                    if isinstance(rt_app, (int, float)):
-                        gull_rts.append(rt_app)
-                elif outcome == "GULL_MISS":
-                    pm_misses += 1
-                elif outcome == "GULL_FALSE_ALARM": 
-                    pm_false_alarms += 1
-
-                print("[Bird outcome]", outcome,
-                                  f"(H={hits}, M={misses}, NR={nr_misses}, "
-                                  f"FA={false_alarms}, CR={correct_rejects}, "
-                                  f"pH={pm_hits}, pM={pm_misses}, pFA={pm_false_alarms})")
+            if outcome is not None or fb is not None:
+                log_trial(outcome, trial_record, fb)
 
 
 
